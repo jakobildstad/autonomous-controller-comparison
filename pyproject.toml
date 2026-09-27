@@ -1,16 +1,21 @@
 [project]
 name = "simple-robot-comparison"
 version = "0.1.0"
-description = "Add your description here"
+description = "Manual MuJoCo driving with a reference path and varying grip"
 readme = "README.md"
 authors = [
     { name = "Jakob Ildstad", email = "jakobildstad@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "glfw>=2.10.2",
+    "mujoco>=3.14.0",
+    "numpy>=2.5.3",
+    "scipy>=1.18.1",
+]
 
 [project.scripts]
-simple-robot-comparison = "simple_robot_comparison:main"
+simple-robot-comparison = "simple_robot_comparison.main:main"
 
 [build-system]
 requires = ["uv_build>=0.9.2,<0.10.0"]
