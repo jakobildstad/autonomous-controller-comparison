@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-simple-robot-comparison = "simple_robot_comparison.main:main"
+sim = "simple_robot_comparison.main:main"
 
 [build-system]
 requires = ["uv_build>=0.9.2,<0.10.0"]

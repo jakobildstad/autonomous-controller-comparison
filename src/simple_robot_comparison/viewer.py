@@ -10,7 +10,9 @@ import numpy as np
 class Viewer:
     """A GLFW window using MuJoCo's renderer, with a fixed overview camera."""
 
-    def __init__(self, model: mujoco.MjModel) -> None:
+    def __init__(
+        self, model: mujoco.MjModel, mode: str = "manual", friction: str = "high"
+    ) -> None:
         if not glfw.init():
             raise RuntimeError("Could not initialize GLFW; a desktop display is needed")
         self.window = glfw.create_window(1100, 750, "MuJoCo car", None, None)
@@ -28,6 +30,15 @@ class Viewer:
         self.camera.azimuth = 90
         self.camera.elevation = -65
         self.reset_requested = False
+        self.instructions = f"Mode: {mode}   Friction: {friction}\n"
+        if mode == "manual":
+            self.instructions += (
+                "W/S or Up/Down: drive\nA/D or Left/Right: turn\n"
+                "Release keys: motors off\n"
+            )
+        self.instructions += "R: reset + new loop   Esc: quit\nGreen: reference"
+        if friction == "random":
+            self.instructions += "   Lighter blue: more slippery"
         glfw.set_key_callback(self.window, self._on_key)
 
     def _on_key(self, window, key, scancode, action, mods) -> None:
@@ -96,9 +107,7 @@ class Viewer:
             mujoco.mjtFont.mjFONT_NORMAL,
             mujoco.mjtGridPos.mjGRID_TOPLEFT,
             viewport,
-            "W/S or Up/Down: drive\nA/D or Left/Right: turn\n"
-            "Release keys: motors off\nR: new loop + grip   Esc: quit\n"
-            "Green: reference   Lighter blue: more slippery",
+            self.instructions,
             "",
             self.context,
         )
