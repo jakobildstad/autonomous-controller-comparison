@@ -1,6 +1,6 @@
 <!-- Adapted from Google DeepMind's MuJoCo car example (Apache-2.0).
      https://github.com/google-deepmind/mujoco/blob/main/model/car/car.xml
-     Original car mechanics; terrain.py adds flat ground patches. -->
+     Original car mechanics; terrain.py adds the flat ground and grip map. -->
 <mujoco>
   <compiler autolimits="true"/>
   <option timestep="0.002" integrator="implicitfast"/>
@@ -29,7 +29,7 @@
   </default>
 
   <worldbody>
-    <!-- terrain.py adds adjoining ground patches, all with their tops at z=0. -->
+    <!-- terrain.py adds one flat ground surface with its top at z=0. -->
     <body name="car" pos="0 0 .03">
       <freejoint/>
       <light name="top light" pos="0 0 2" mode="trackcom" diffuse=".4 .4 .4"/>
@@ -39,13 +39,13 @@
       <light name="front light" pos=".1 0 .02" dir="2 0 -1" diffuse="1 1 1"/>
       <body name="left wheel" pos="-.07 .06 0" zaxis="0 1 0">
         <joint name="left"/>
-        <geom class="wheel"/>
+        <geom name="left tire" class="wheel"/>
         <site class="decor" size=".006 .025 .012"/>
         <site class="decor" size=".025 .006 .012"/>
       </body>
       <body name="right wheel" pos="-.07 -.06 0" zaxis="0 1 0">
         <joint name="right"/>
-        <geom class="wheel"/>
+        <geom name="right tire" class="wheel"/>
         <site class="decor" size=".006 .025 .012"/>
         <site class="decor" size=".025 .006 .012"/>
       </body>

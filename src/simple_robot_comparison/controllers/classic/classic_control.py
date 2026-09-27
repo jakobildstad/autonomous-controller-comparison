@@ -26,9 +26,9 @@ class ClassicController:
 
     def __init__(self) -> None:
         self.lookahead = 0.18  # metres along the path
-        self.cruise_speed = 0.75  # m/s
-        self.heading_kp = 4.0  # (rad/s) / rad
-        self.heading_kd = 0.2
+        self.speed_reference = 0.75  # m/s
+        self.heading_kp = 6.0  # (rad/s) / rad
+        self.heading_kd = 0.1
         self.derivative_filter_time = 0.1  # seconds
         self.wheel_speed_kp = 0.02  # N m / (rad/s)
         self.previous_error: float | None = None
@@ -66,8 +66,8 @@ class ClassicController:
         desired_wheels = (
             np.array(
                 [
-                    self.cruise_speed - WHEEL_SEPARATION * yaw_rate / 2,
-                    self.cruise_speed + WHEEL_SEPARATION * yaw_rate / 2,
+                    self.speed_reference - WHEEL_SEPARATION * yaw_rate / 2,
+                    self.speed_reference + WHEEL_SEPARATION * yaw_rate / 2,
                 ]
             )
             / WHEEL_RADIUS

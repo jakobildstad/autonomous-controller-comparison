@@ -7,7 +7,12 @@ import numpy as np
 
 from simple_robot_comparison.control_input import ControlInput
 from simple_robot_comparison.observation import Observation
-from simple_robot_comparison.terrain import FRICTION_MODES, add_ground, set_grip
+from simple_robot_comparison.terrain import (
+    FRICTION_MODES,
+    FRICTION_PRESETS,
+    FrictionMap,
+    add_ground,
+)
 
 
 class Simulation:
@@ -27,19 +32,37 @@ class Simulation:
         spec = mujoco.MjSpec.from_file(
             str(Path(__file__).parent / "models" / "car.xml")
         )
-        add_ground(spec, self.rng, friction)
+        add_ground(spec)
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
         self.car_id = self.model.body("car").id
+        self._wheel_body_ids = [
+            self.model.body(f"{side} wheel").id for side in ("left", "right")
+        ]
+        self._wheel_pair_ids = [
+            self.model.pair(f"{side}_ground").id for side in ("left", "right")
+        ]
         self.substeps = 10
         self.dt = self.substeps * self.model.opt.timestep
         self.reset()
 
     def reset(self) -> None:
-        """Reset the car, preserving the preset or resampling random patch grip."""
-        set_grip(self.model, self.rng, self.friction)
+        """Reset the car and regenerate the grip field only in random mode."""
+        self.grip = FrictionMap(self.rng, self.friction)
+        self.grip.write_texture(self.model)
+        self.model.geom("ground").friction[0] = FRICTION_PRESETS.get(self.friction, 1.0)
         mujoco.mj_resetData(self.model, self.data)
+        self._update_wheel_grip()
         mujoco.mj_forward(self.model, self.data)
+
+    def _update_wheel_grip(self) -> None:
+        """Sample beneath each wheel centre and set its ground contact friction."""
+        # Refresh poses after integration before looking up the next contact's
+        # grip. Wheel-centre projection approximates the small contact footprint.
+        mujoco.mj_kinematics(self.model, self.data)
+        positions = self.data.xpos[self._wheel_body_ids, :2]
+        coefficients = self.grip.sample(positions)
+        self.model.pair_friction[self._wheel_pair_ids, :2] = coefficients[:, None]
 
     def observe(self) -> Observation:
         """Copy the car's planar state into a controller-friendly snapshot."""
@@ -67,6 +90,13 @@ class Simulation:
         self.data.ctrl[:] = np.clip(
             [control_input.forward, control_input.turn], -1.0, 1.0
         )
-        # The physics substeps run inside MuJoCo's compiled engine.
-        mujoco.mj_step(self.model, self.data, nstep=self.substeps)
+        if self.friction == "random":
+            # Contact physics still runs in MuJoCo; Python updates the spatial
+            # coefficient before each 2 ms step, not just once per control input.
+            for _ in range(self.substeps):
+                self._update_wheel_grip()
+                mujoco.mj_step(self.model, self.data)
+            self._update_wheel_grip()
+        else:
+            mujoco.mj_step(self.model, self.data, nstep=self.substeps)
         mujoco.mj_forward(self.model, self.data)

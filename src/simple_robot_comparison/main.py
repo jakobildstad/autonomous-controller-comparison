@@ -23,7 +23,7 @@ def main() -> None:
         "--friction",
         choices=FRICTION_MODES,
         default="high",
-        help="uniform high=1.0, medium=0.3, low=0.08, or random patches (default: high)",
+        help="uniform high=1.0, medium=0.3, low=0.08, or a smooth random map (default: high)",
     )
     args = parser.parse_args()
     controller_factory = CONTROLLERS.get(args.mode)
@@ -36,6 +36,7 @@ def main() -> None:
             started = time.perf_counter()
             if viewer.reset_requested:
                 simulation.reset()
+                viewer.refresh_ground_texture(simulation.model)
                 reference = random_reference()
                 controller = (
                     controller_factory() if controller_factory is not None else None

@@ -1,66 +1,103 @@
-"""Flat ground with uniform friction or randomly sized slippery patches."""
-
-from itertools import pairwise
+"""One flat surface with a continuous, spatially correlated friction map."""
 
 import mujoco
 import numpy as np
+from scipy.ndimage import gaussian_filter, map_coordinates
+from scipy.special import expit
 
 FRICTION_PRESETS = {"high": 1.0, "medium": 0.3, "low": 0.08}
 FRICTION_MODES = (*FRICTION_PRESETS, "random")
+GROUND_MIN = np.array([-2.0, -2.0])
+GROUND_SIZE = np.array([6.0, 4.0])
+MAP_SHAPE = (256, 384)  # Rows along y, columns along x; about 1.6 cm per pixel.
+MIN_FRICTION = 0.03
+MAX_FRICTION = 1.0
+TEXTURE_NAME = "ground_grip"
 
 
-def add_ground(spec: mujoco.MjSpec, rng: np.random.Generator, friction: str) -> None:
-    """Cover the same 6 x 4 metre area with one surface or adjoining patches.
-
-    Every top surface is at z=0. Uniform presets use one box, so there are no
-    patch seams. MuJoCo handles contact physics in either case.
-    """
-    if friction != "random":
-        spec.worldbody.add_geom(
-            name="ground",
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            pos=[1.0, 0.0, -0.05],
-            size=[3.0, 2.0, 0.05],
-            priority=1,
+def add_ground(spec: mujoco.MjSpec) -> None:
+    """Add one 6 x 4 metre collider, its texture, and wheel contact pairs."""
+    spec.add_texture(
+        name=TEXTURE_NAME,
+        type=mujoco.mjtTexture.mjTEXTURE_2D,
+        builtin=mujoco.mjtBuiltin.mjBUILTIN_FLAT,
+        width=MAP_SHAPE[1],
+        height=MAP_SHAPE[0],
+        rgb1=[1.0, 1.0, 1.0],
+    )
+    material = spec.add_material(
+        name="ground_material", texrepeat=[1, 1], texuniform=False, specular=0.0
+    )
+    material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = TEXTURE_NAME
+    spec.worldbody.add_geom(
+        name="ground",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        pos=[1.0, 0.0, -0.05],
+        size=[3.0, 2.0, 0.05],
+        material="ground_material",
+        priority=1,
+    )
+    for side in ("left", "right"):
+        # Explicit pairs override geom friction mixing, so low grip is not
+        # replaced by the wheel or ground's larger default coefficient.
+        spec.add_pair(
+            name=f"{side}_ground",
+            geomname1=f"{side} tire",
+            geomname2="ground",
+            condim=3,
+            friction=[1.0, 1.0, 0.005, 0.0001, 0.0001],
         )
-        return
-
-    heights = rng.uniform(0.5, 1.5, 4)
-    y_edges = np.r_[-2.0, -2.0 + np.cumsum(heights) / heights.sum() * 4.0]
-    for row, (bottom, top) in enumerate(pairwise(y_edges)):
-        widths = rng.uniform(0.5, 1.5, 6)
-        x_edges = np.r_[-2.0, -2.0 + np.cumsum(widths) / widths.sum() * 6.0]
-        for column, (left, right) in enumerate(pairwise(x_edges)):
-            spec.worldbody.add_geom(
-                name=f"ground_{row}_{column}",
-                type=mujoco.mjtGeom.mjGEOM_BOX,
-                pos=[(left + right) / 2, (bottom + top) / 2, -0.05],
-                size=[(right - left) / 2, (top - bottom) / 2, 0.05],
-                priority=1,  # Ground friction overrides the wheel's default.
-            )
 
 
-def set_grip(model: mujoco.MjModel, rng: np.random.Generator, friction: str) -> None:
-    """Apply a uniform preset, or give about 70% of patches lower grip.
+class FrictionMap:
+    """A fixed grip field for one episode, shared by physics and visualization.
 
-    Random grip uses log-uniform sampling between 0.03 and 0.6; the remaining
-    patches have grip 1.0. Pale blue means more slippery. Geometry stays fixed.
+    Gaussian-filtered noise creates broad regions plus smaller irregular spots.
+    Bilinear interpolation makes grip continuous between grid samples. This is
+    a varying contact coefficient, not a deformable-soil or tire model.
     """
-    ground_ids = np.flatnonzero(model.geom_bodyid == 0)
-    if friction != "random":
-        model.geom_friction[ground_ids] = [FRICTION_PRESETS[friction], 0.005, 0.0001]
-        model.geom_rgba[ground_ids] = [0.18, 0.22, 0.25, 1.0]
-        return
 
-    for geom_id in ground_ids:
-        if rng.random() < 0.7:
-            shade = rng.uniform(0.0, 1.0)
-            coefficient = np.exp(np.log(0.03) + shade * np.log(0.6 / 0.03))
-            color = (1 - shade) * np.array([0.7, 0.9, 1.0]) + shade * np.array(
-                [0.1, 0.3, 0.5]
-            )
-        else:
-            coefficient = 1.0
-            color = [0.18, 0.22, 0.25]
-        model.geom_friction[geom_id] = [coefficient, 0.005, 0.0001]
-        model.geom_rgba[geom_id] = [*color, 1.0]
+    def __init__(self, rng: np.random.Generator, friction: str) -> None:
+        if friction != "random":
+            self.values = np.full(MAP_SHAPE, FRICTION_PRESETS[friction])
+            return
+
+        field = np.zeros(MAP_SHAPE)
+        pixel_size = GROUND_SIZE[::-1] / MAP_SHAPE
+        for weight, minimum, maximum in [(0.75, 0.25, 0.65), (0.25, 0.05, 0.14)]:
+            # Random x/y smoothing lengths make elongated as well as round
+            # regions. Lengths are in metres, independent of grid resolution.
+            sigma = rng.uniform(minimum, maximum, 2) / pixel_size
+            noise = gaussian_filter(rng.standard_normal(MAP_SHAPE), sigma=sigma)
+            field += weight * (noise - noise.mean()) / max(noise.std(), 1e-12)
+
+        # A smooth bounded mapping avoids hard clipping into flat plateaus.
+        wetness = expit(2.0 * (field + rng.uniform(-0.3, 0.3)))
+        self.values = np.exp(
+            np.log(MAX_FRICTION) + wetness * np.log(MIN_FRICTION / MAX_FRICTION)
+        )
+
+    def sample(self, positions: np.ndarray) -> np.ndarray:
+        """Return grip at an (N, 2) array of world positions, clamping at edges."""
+        # Values lie at texture-pixel centres. Use the same coordinates as the
+        # ground's 2D texture, rather than assigning a constant value per cell.
+        pixels = (positions - GROUND_MIN) / GROUND_SIZE * np.array(
+            MAP_SHAPE[::-1]
+        ) - 0.5
+        return map_coordinates(
+            self.values, pixels[:, ::-1].T, order=1, mode="nearest", prefilter=False
+        )
+
+    def write_texture(self, model: mujoco.MjModel) -> None:
+        """Paint low grip pale blue and high grip dark using the same field."""
+        shade = np.log(self.values / MIN_FRICTION) / np.log(MAX_FRICTION / MIN_FRICTION)
+        colors = (1 - shade[..., None]) * np.array([0.7, 0.9, 1.0]) + shade[
+            ..., None
+        ] * np.array([0.18, 0.22, 0.25])
+        texture_id = model.texture(TEXTURE_NAME).id
+        start = model.tex_adr[texture_id]
+        # MuJoCo's box-top texture runs from +y to -y, while map rows run
+        # from -y to +y. Flip only the display data to keep physics aligned.
+        model.tex_data[start : start + colors.size] = (
+            np.round(255 * colors[::-1]).astype(np.uint8).ravel()
+        )

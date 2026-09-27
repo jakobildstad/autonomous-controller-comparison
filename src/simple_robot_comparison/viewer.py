@@ -7,6 +7,7 @@ import mujoco
 import numpy as np
 
 from simple_robot_comparison.control_input import ControlInput
+from simple_robot_comparison.terrain import TEXTURE_NAME
 
 
 class Viewer:
@@ -55,6 +56,10 @@ class Viewer:
         """Process input and report whether the window is still open."""
         glfw.poll_events()
         return not glfw.window_should_close(self.window)
+
+    def refresh_ground_texture(self, model: mujoco.MjModel) -> None:
+        """Upload the new grip colors after a simulation reset."""
+        mujoco.mjr_uploadTexture(model, self.context, model.texture(TEXTURE_NAME).id)
 
     def controls(self) -> ControlInput:
         """Return moderate motor efforts while W/S and A/D (or arrows) are held."""

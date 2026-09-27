@@ -18,13 +18,19 @@ The default is `--mode manual --friction high`. Use `--help` for all options.
 | `high` | Uniform friction 1.0; no patches (default) |
 | `medium` | Uniform friction 0.3; no patches |
 | `low` | Uniform friction 0.08; no patches |
-| `random` | About 70% of patches have friction 0.03–0.6; the rest have 1.0 |
+| `random` | Smooth spatial friction map, bounded between 0.03 and 1.0 |
 
 In manual mode, hold **W/S** (or up/down) to drive and **A/D** (or left/right)
 to turn. Releasing the keys switches off motor effort; it does not brake.
 **R** resets the car and generates a new loop. Uniform friction stays unchanged;
-random patch grip is resampled. Patch sizes change when the app restarts.
-Lighter blue patches are more slippery. **Esc** closes the window.
+random mode generates a new friction map. Lighter blue means more slippery.
+**Esc** closes the window.
+
+Random grip combines Gaussian-smoothed noise at two scales, creating broad
+regions with smaller irregular variations. The map stays fixed until reset.
+Each driven wheel samples it continuously using bilinear interpolation at its
+position, with friction updated every 2 ms physics step. The ground is one flat
+collider; the texture displays the same map.
 
 The classic controller lives in
 [`controllers/classic_control.py`](src/simple_robot_comparison/controllers/classic_control.py):
@@ -54,7 +60,7 @@ it through `--mode`. For a stateless function, the factory can be `lambda: contr
 - `control_input.py`: named forward and turn motor efforts.
 - `simulation.py`: load, reset, and step the compiled MuJoCo physics.
 - `reference.py`: generate a smooth closed loop in metres.
-- `terrain.py`: create uniform ground or random friction patches.
+- `terrain.py`: create flat ground and a continuous friction map.
 - `viewer.py`: keyboard input and MuJoCo rendering.
 - `models/car.xml`: the car model.
 
@@ -67,7 +73,7 @@ under Apache-2.0; see `src/simple_robot_comparison/models/LICENSE`.
 
 ## Autonomous Systems
 
-### classic_control
+### Classic control
 
 A simple path-following controller for a stable differential-drive rover: LOS selects the desired heading, and PD determines the turning rate.
 

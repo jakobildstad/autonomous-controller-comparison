@@ -5,7 +5,9 @@ from collections.abc import Callable
 import numpy as np
 
 from simple_robot_comparison.control_input import ControlInput
-from simple_robot_comparison.controllers.classic_control import ClassicController
+from simple_robot_comparison.controllers.classic.classic_control import (
+    ClassicController,
+)
 from simple_robot_comparison.observation import Observation
 
 type Controller = Callable[[Observation, np.ndarray, float], ControlInput]
