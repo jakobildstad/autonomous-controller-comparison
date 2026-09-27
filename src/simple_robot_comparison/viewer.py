@@ -6,6 +6,8 @@ import glfw
 import mujoco
 import numpy as np
 
+from simple_robot_comparison.control_input import ControlInput
+
 
 class Viewer:
     """A GLFW window using MuJoCo's renderer, with a fixed overview camera."""
@@ -54,10 +56,10 @@ class Viewer:
         glfw.poll_events()
         return not glfw.window_should_close(self.window)
 
-    def controls(self) -> tuple[float, float]:
+    def controls(self) -> ControlInput:
         """Return moderate motor efforts while W/S and A/D (or arrows) are held."""
         if not glfw.get_window_attrib(self.window, glfw.FOCUSED):
-            return 0.0, 0.0
+            return ControlInput()
 
         def held(*keys: int) -> int:
             return int(
@@ -66,7 +68,7 @@ class Viewer:
 
         forward = held(glfw.KEY_W, glfw.KEY_UP) - held(glfw.KEY_S, glfw.KEY_DOWN)
         turn = held(glfw.KEY_A, glfw.KEY_LEFT) - held(glfw.KEY_D, glfw.KEY_RIGHT)
-        return 0.7 * forward, 0.3 * turn
+        return ControlInput(forward=0.7 * forward, turn=0.3 * turn)
 
     def draw(
         self, model: mujoco.MjModel, data: mujoco.MjData, reference: np.ndarray

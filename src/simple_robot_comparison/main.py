@@ -17,7 +17,7 @@ def main() -> None:
         "--mode",
         choices=["manual", *CONTROLLERS],
         default="manual",
-        help="control method (default: manual; custom is your controller placeholder)",
+        help="control method (default: manual)",
     )
     parser.add_argument(
         "--friction",
@@ -26,7 +26,8 @@ def main() -> None:
         help="uniform high=1.0, medium=0.3, low=0.08, or random patches (default: high)",
     )
     args = parser.parse_args()
-    controller = CONTROLLERS.get(args.mode)
+    controller_factory = CONTROLLERS.get(args.mode)
+    controller = controller_factory() if controller_factory is not None else None
     simulation = Simulation(friction=args.friction)
     reference = random_reference()
     viewer = Viewer(simulation.model, mode=args.mode, friction=args.friction)
@@ -36,15 +37,18 @@ def main() -> None:
             if viewer.reset_requested:
                 simulation.reset()
                 reference = random_reference()
+                controller = (
+                    controller_factory() if controller_factory is not None else None
+                )
                 viewer.reset_requested = False
 
             if controller is None:
-                forward, turn = viewer.controls()
+                control_input = viewer.controls()
             else:
-                forward, turn = controller(
+                control_input = controller(
                     simulation.observe(), reference, simulation.dt
                 )
-            simulation.step(forward, turn)
+            simulation.step(control_input)
             viewer.draw(simulation.model, simulation.data, reference)
             time.sleep(max(0.0, simulation.dt - (time.perf_counter() - started)))
     finally:

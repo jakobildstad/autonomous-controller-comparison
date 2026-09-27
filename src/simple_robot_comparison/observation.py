@@ -10,6 +10,7 @@ class Observation:
     Position (x, y) and velocity (vx, vy) use world coordinates, in metres and
     metres/second. Yaw is in radians, counter-clockwise from +x. Yaw rate is
     world-z angular velocity in radians/second (planar yaw rate).
+    Wheel speeds are ideal encoder readings in rad/s, positive rolling forward.
     Terrain friction is deliberately absent: a controller must infer grip.
     """
 
@@ -19,3 +20,5 @@ class Observation:
     vx: float
     vy: float
     yaw_rate: float
+    left_wheel_speed: float
+    right_wheel_speed: float
