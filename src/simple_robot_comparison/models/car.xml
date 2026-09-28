@@ -5,6 +5,10 @@
   <compiler autolimits="true"/>
   <option timestep="0.002" integrator="implicitfast"/>
 
+  <visual>
+    <headlight ambient=".4 .4 .4"/>
+  </visual>
+
   <asset>
     <mesh name="chasis" scale=".01 .006 .0015"
       vertex=" 9   2   0
@@ -32,11 +36,9 @@
     <!-- terrain.py adds one flat ground surface with its top at z=0. -->
     <body name="car" pos="0 0 .03">
       <freejoint/>
-      <light name="top light" pos="0 0 2" mode="trackcom" diffuse=".4 .4 .4"/>
       <geom name="chasis" type="mesh" mesh="chasis"/>
       <!-- Keep the original frictionless front support above ground priority. -->
       <geom name="front wheel" pos=".08 0 -.015" type="sphere" size=".015" condim="1" priority="2"/>
-      <light name="front light" pos=".1 0 .02" dir="2 0 -1" diffuse="1 1 1"/>
       <body name="left wheel" pos="-.07 .06 0" zaxis="0 1 0">
         <joint name="left"/>
         <geom name="left tire" class="wheel"/>
