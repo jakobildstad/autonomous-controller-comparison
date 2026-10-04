@@ -33,7 +33,7 @@ position, with friction updated every 2 ms physics step. The ground is one flat
 collider; the texture displays the same map.
 
 The classic controller lives in
-[`controllers/classic_control.py`](src/simple_robot_comparison/controllers/classic_control.py):
+[`controllers/classic/classic_control.py`](src/simple_robot_comparison/controllers/classic/classic_control.py):
 
 ```python
 controller = ClassicController()
@@ -47,8 +47,9 @@ Observations are ideal simulated state and exclude terrain friction.
 
 Return `ControlInput(forward=..., turn=...)`, with both motor efforts in `[-1, 1]`:
 positive `forward` drives ahead and positive `turn` turns left.
-The classic controller follows the path using LOS guidance, heading PD, and
-wheel-speed feedback. Its small class stores the previous error and commands;
+The classic controller follows the path using a curvature-based speed reference,
+LOS guidance, heading PD, and wheel-speed feedback. Its small class stores the
+previous error and commands;
 **R** creates a fresh instance. Add each future method in its own file and register
 a factory that creates its controller
 in [`CONTROLLERS`](src/simple_robot_comparison/controllers/__init__.py) to expose
@@ -107,16 +108,71 @@ $$
 
 `wrap` maps angles to $[-\pi,\pi)$. Use radians and optionally filter the derivative.
 
+#### Calculate the forward-speed reference
+
+`speed_reference(...)` in `classic_control.py` chooses the highest speed allowed
+by the planned path limits: faster on straights and slower in tight turns.
+The controller stores the current result in `self.speed_reference`.
+
+Estimate the magnitude of curvature from the circle through three neighbouring
+waypoints. With incoming vector $a$ and outgoing vector $b$:
+
+$$
+|\kappa_i|=\frac{2|a_xb_y-a_yb_x|}{\|a\|\,\|b\|\,\|a+b\|}
+$$
+
+Curvature has units $\mathrm{m}^{-1}$ and is zero on a straight. Since lateral
+acceleration is $a_{\mathrm{lat}}=v^2|\kappa|$, the initial speed limit is
+
+$$
+v_i=\min\left(v_{\max},
+\sqrt{\frac{a_{\mathrm{lat,max}}}{\max(|\kappa_i|,\epsilon)}}\right).
+$$
+
+The profile also respects the nominal yaw-rate and wheel-speed limits:
+
+$$
+v_i\leq\frac{\omega_{\max}}{\max(|\kappa_i|,\epsilon)},
+\qquad
+v_i\leq\frac{r\dot\phi_{\max}}{1+\frac b2|\kappa_i|}.
+$$
+
+The second limit leaves room for the outer wheel to turn faster in a corner.
+To start braking **before** a turn, walk backwards along the path and apply
+
+$$
+v_i^2\leftarrow\min\left(v_i^2,
+v_{i+1}^2+2a_{\mathrm{brake,max}}\Delta s_i\right).
+$$
+
+This follows from $v_{i+1}^2=v_i^2-2a_{\mathrm{brake,max}}\Delta s_i$ under
+constant deceleration. Two backwards passes handle the closed-loop seam, so a
+corner just after start/finish also slows the approach before it. Interpolate
+$v^2$ at the car's closest projection onto the path, then take the square root
+to obtain $v_{\mathrm{ref}}$. The existing wheel-reference rate limit controls
+acceleration towards this target.
+
+Tune `self.max_speed` (**0.36 m/s**), `self.max_lateral_acceleration`
+(**0.3 m/s²**), and `self.max_braking_acceleration` (**0.25 m/s²**) in
+`ClassicController.__init__`. The straight-line maximum follows from
+$r\dot\phi_{\max}=0.03\cdot12=0.36$ m/s. The acceleration limits are fixed
+assumptions; the controller does not read the hidden friction map. Slip and
+tracking errors can therefore violate these planned limits. This is a fast
+feasible reference under the stated path assumptions, not a guarantee of
+minimum lap time or grip adaptation. Wheel-speed feedback still controls wheel
+rotation, so body speed can differ from the reference when slipping.
+
 #### Calculate wheel-speed references
 
-Start with a low constant forward-speed reference $v_{\mathrm{cmd}}=v_0$. For wheel radius $r$ and wheel separation $b$:
+Use the varying forward-speed reference $v_{\mathrm{ref}}$ calculated above.
+For wheel radius $r$ and wheel separation $b$:
 
 $$
 \dot\phi_{R,\mathrm{ref}}
-=\frac{v_0+\frac b2\omega_{\mathrm{cmd}}}{r},
+=\frac{v_{\mathrm{ref}}+\frac b2\omega_{\mathrm{cmd}}}{r},
 \qquad
 \dot\phi_{L,\mathrm{ref}}
-=\frac{v_0-\frac b2\omega_{\mathrm{cmd}}}{r}
+=\frac{v_{\mathrm{ref}}-\frac b2\omega_{\mathrm{cmd}}}{r}
 $$
 
 Positive wheel speeds mean forward motion; positive $\omega$ means counterclockwise rotation.
@@ -136,8 +192,8 @@ The car's tendon gearing gives $\tau_L=(u_{\mathrm{forward}}-u_{\mathrm{turn}})/
 and $\tau_R=(u_{\mathrm{forward}}+u_{\mathrm{turn}})/2$, so the controller returns
 `ControlInput(forward=tau_left + tau_right, turn=tau_right - tau_left)`.
 
-The defaults are deliberately slow: cruise speed **0.15 m/s**, lookahead **0.18 m**,
-turn-rate reference limited to **2 rad/s**, wheel-speed references to **12 rad/s**,
+The defaults use lookahead **0.18 m**, turn-rate reference limited to **10 rad/s**,
+wheel-speed references to **12 rad/s**,
 and their rate of change to **15 rad/s²**. The model already limits each wheel's
 motor torque to **0.5 N m** and each control input to `[-1, 1]`.
 These are simulation settings, not measured hardware ratings. Reference limits

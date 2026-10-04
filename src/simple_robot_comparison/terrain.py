@@ -89,11 +89,26 @@ class FrictionMap:
         )
 
     def write_texture(self, model: mujoco.MjModel) -> None:
-        """Paint low grip pale blue and high grip dark using the same field."""
-        shade = np.log(self.values / MIN_FRICTION) / np.log(MAX_FRICTION / MIN_FRICTION)
-        colors = (1 - shade[..., None]) * np.array([0.7, 0.9, 1.0]) + shade[
-            ..., None
-        ] * np.array([0.18, 0.22, 0.25])
+        """Paint low grip as mud, medium as grass, and high as concrete."""
+        friction_levels = np.log(
+            [FRICTION_PRESETS[mode] for mode in ("low", "medium", "high")]
+        )
+        palette = np.array(
+            [
+                [0.38, 0.26, 0.16],  # Brown mud.
+                [0.24, 0.38, 0.16],  # Green grass.
+                [0.58, 0.58, 0.58],  # Grey concrete.
+            ]
+        )
+        # Anchor colors at the presets; blend random terrain on the log grip scale.
+        log_friction = np.log(self.values)
+        colors = np.stack(
+            [
+                np.interp(log_friction, friction_levels, channel)
+                for channel in palette.T
+            ],
+            axis=-1,
+        )
         texture_id = model.texture(TEXTURE_NAME).id
         start = model.tex_adr[texture_id]
         # MuJoCo's box-top texture runs from +y to -y, while map rows run

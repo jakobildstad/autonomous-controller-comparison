@@ -39,9 +39,10 @@ class Viewer:
                 "W/S or Up/Down: drive\nA/D or Left/Right: turn\n"
                 "Release keys: motors off\n"
             )
-        self.instructions += "R: reset + new loop   Esc: quit\nGreen: reference"
-        if friction == "random":
-            self.instructions += "   Lighter blue: more slippery"
+        self.instructions += (
+            "R: reset + new loop   Esc: quit\nBright green line: reference\n"
+            "Ground: grey concrete (high), green grass (medium), brown mud (low)"
+        )
         glfw.set_key_callback(self.window, self._on_key)
 
     def _on_key(self, window, key, scancode, action, mods) -> None:
