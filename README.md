@@ -1,5 +1,7 @@
 # Simple Robot Comparison
 
+![Classic (blue) and MPC (orange) on the shared MuJoCo track](docs/images/comparison.png)
+
 Compare classic control and model predictive control (MPC) on DeepMind's MuJoCo
 car, or drive manually along a random green closed-loop reference. The car uses
 differential drive, with two driven wheels and a front support.
