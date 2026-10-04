@@ -8,6 +8,7 @@ from simple_robot_comparison.control_input import ControlInput
 from simple_robot_comparison.controllers.classic.classic_control import (
     ClassicController,
 )
+from simple_robot_comparison.controllers.mpc.mpc_control import MPCController
 from simple_robot_comparison.observation import Observation
 
 type Controller = Callable[[Observation, np.ndarray, float], ControlInput]
@@ -15,4 +16,5 @@ type Controller = Callable[[Observation, np.ndarray, float], ControlInput]
 # A controller can be a callable object or a function returned by a factory.
 CONTROLLERS: dict[str, Callable[[], Controller]] = {
     "classic": ClassicController,
+    "mpc": MPCController,
 }

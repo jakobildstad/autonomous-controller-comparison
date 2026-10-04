@@ -8,6 +8,8 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "casadi>=3.8.1",
+    "do-mpc>=5.1.2",
     "glfw>=2.10.2",
     "mujoco>=3.14.0",
     "numpy>=2.5.3",

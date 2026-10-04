@@ -1,30 +1,53 @@
 # Simple Robot Comparison
 
-Drive DeepMind's MuJoCo car along a random green closed-loop reference, manually
-or with your own controller. The car uses differential drive, with two driven
-wheels and a front support.
+Compare classic control and model predictive control (MPC) on DeepMind's MuJoCo
+car, or drive manually along a random green closed-loop reference. The car uses
+differential drive, with two driven wheels and a front support.
+
+Use Python 3.14+ and `uv`. The viewer needs a desktop display. `uv sync` installs
+the simulation and MPC dependencies from `uv.lock`.
 
 ```sh
 uv sync
 uv run sim
 uv run sim --mode manual --friction random
 uv run sim --mode classic --friction medium
+uv run sim --mode mpc --friction high
+uv run sim --mode compare --friction random
+uv run sim --help
 ```
 
 The default is `--mode manual --friction high`. Use `--help` for all options.
 
+| `--mode` | Behavior |
+| --- | --- |
+| `manual` | Keyboard driving |
+| `classic` | Variable-speed path following with LOS guidance and heading PD |
+| `mpc` | Predictive speed and turning control using [do-mpc](https://www.do-mpc.com/en/latest/) |
+| `compare` | Blue **CLASSIC** and orange **MPC** cars, each labeled |
+
+Comparison cars start together and share the same track and friction map. They
+have independent physics, so they can overlap without colliding. Both use the
+same variable-speed reference at the same path position; their actual speeds
+and controller limits can differ.
+
 | `--friction` | Ground |
 | --- | --- |
-| `high` | Uniform friction 1.0; no patches (default) |
-| `medium` | Uniform friction 0.3; no patches |
-| `low` | Uniform friction 0.08; no patches |
-| `random` | Smooth spatial friction map, bounded between 0.03 and 1.0 |
+| `high` | Grey concrete; uniform friction 1.0 (default) |
+| `medium` | Green grass; uniform friction 0.3 |
+| `low` | Brown mud; uniform friction 0.08 |
+| `random` | Smooth friction map between 0.03 and 1.0, blending the same ground colors |
 
 In manual mode, hold **W/S** (or up/down) to drive and **A/D** (or left/right)
 to turn. Releasing the keys switches off motor effort; it does not brake.
-**R** resets the car and generates a new loop. Uniform friction stays unchanged;
-random mode generates a new friction map. Lighter blue means more slippery.
+**R** resets all cars and controllers, clears their trails, and generates a new
+loop. Uniform friction stays unchanged; random mode generates a new shared map.
 **Esc** closes the window.
+
+Thin, translucent trails match each car's color and retain its latest 3,000
+position samples. They trace the body-origin `(x, y)` used for path tracking,
+projected onto the reference line's ground plane. Perfect tracking therefore
+overlaps the reference; there is no offset to the rear of the car.
 
 Random grip combines Gaussian-smoothed noise at two scales, creating broad
 regions with smaller irregular variations. The map stays fixed until reset.
@@ -32,10 +55,14 @@ Each driven wheel samples it continuously using bilinear interpolation at its
 position, with friction updated every 2 ms physics step. The ground is one flat
 collider; the texture displays the same map.
 
-The classic controller lives in
-[`controllers/classic/classic_control.py`](src/simple_robot_comparison/controllers/classic/classic_control.py):
+Both autonomous controllers use the same callable interface. For example,
+[`ClassicController`](src/simple_robot_comparison/controllers/classic/classic_control.py):
 
 ```python
+from simple_robot_comparison.controllers.classic.classic_control import (
+    ClassicController,
+)
+
 controller = ClassicController()
 control_input = controller(observation, reference, dt)
 ```
@@ -47,16 +74,16 @@ Observations are ideal simulated state and exclude terrain friction.
 
 Return `ControlInput(forward=..., turn=...)`, with both motor efforts in `[-1, 1]`:
 positive `forward` drives ahead and positive `turn` turns left.
-The classic controller follows the path using a curvature-based speed reference,
-LOS guidance, heading PD, and wheel-speed feedback. Its small class stores the
-previous error and commands;
-**R** creates a fresh instance. Add each future method in its own file and register
+Controllers retain their state between calls; **R** creates fresh instances.
+Add each future method in its own file and register
 a factory that creates its controller
 in [`CONTROLLERS`](src/simple_robot_comparison/controllers/__init__.py) to expose
 it through `--mode`. For a stateless function, the factory can be `lambda: control`.
 
 - `main.py`: CLI options and the short control loop.
 - `controllers/`: controllers and factories for their mode names.
+- `controllers/speed_reference.py`: shared curvature and braking speed profile.
+- `controllers/mpc/mpc_control.py`: MPC configuration, prediction model, and feedback.
 - `observation.py`: controller inputs and their units.
 - `control_input.py`: named forward and turn motor efforts.
 - `simulation.py`: load, reset, and step the compiled MuJoCo physics.
@@ -106,13 +133,17 @@ $$
 =\operatorname{clip}(K_p e_k+K_d\dot e_k,\;-\omega_{\max},\;\omega_{\max})
 $$
 
-`wrap` maps angles to $[-\pi,\pi)$. Use radians and optionally filter the derivative.
+`wrap` maps angles to $[-\pi,\pi)$. Angles use radians; the implementation filters
+the derivative with a 0.1 s time constant.
 
 #### Calculate the forward-speed reference
 
-`speed_reference(...)` in `classic_control.py` chooses the highest speed allowed
-by the planned path limits: faster on straights and slower in tight turns.
-The controller stores the current result in `self.speed_reference`.
+Both classic and MPC use
+[`controllers/speed_reference.py`](src/simple_robot_comparison/controllers/speed_reference.py)
+to plan faster travel on straights and slower travel in tight turns.
+`build_speed_profile(...)` builds the profile; classic's `speed_reference(...)`
+samples it at the current position. Each controller stores its current reference
+in `self.speed_reference`.
 
 Estimate the magnitude of curvature from the circle through three neighbouring
 waypoints. With incoming vector $a$ and outgoing vector $b$:
@@ -152,15 +183,21 @@ $v^2$ at the car's closest projection onto the path, then take the square root
 to obtain $v_{\mathrm{ref}}$. The existing wheel-reference rate limit controls
 acceleration towards this target.
 
-Tune `self.max_speed` (**0.36 m/s**), `self.max_lateral_acceleration`
-(**0.3 m/s²**), and `self.max_braking_acceleration` (**0.25 m/s²**) in
-`ClassicController.__init__`. The straight-line maximum follows from
-$r\dot\phi_{\max}=0.03\cdot12=0.36$ m/s. The acceleration limits are fixed
-assumptions; the controller does not read the hidden friction map. Slip and
-tracking errors can therefore violate these planned limits. This is a fast
-feasible reference under the stated path assumptions, not a guarantee of
-minimum lap time or grip adaptation. Wheel-speed feedback still controls wheel
-rotation, so body speed can differ from the reference when slipping.
+Tune the shared profile with these flags in `classic`, `mpc`, or `compare` mode:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--max-speed` | `0.5` | Maximum reference speed in m/s |
+| `--max-lateral-acceleration` | `0.3` | Planned cornering acceleration limit in m/s² |
+| `--max-braking-acceleration` | `0.25` | Planned braking acceleration in m/s² |
+
+`--mpc-speed` remains an alias for `--max-speed` and affects both cars in compare
+mode. MPC and compare require a speed cap no higher than 0.5 m/s.
+
+The profile uses nominal assumptions and excludes the hidden friction map.
+It does not guarantee minimum lap time, grip adaptation, or actual acceleration
+limits. Wheel-speed feedback controls wheel rotation, so body speed can differ
+from the reference when slipping.
 
 #### Calculate wheel-speed references
 
@@ -185,16 +222,129 @@ viscous joint damping:
 
 $$
 \tau_i = \operatorname{clip}\left(d\dot\phi_{i,\mathrm{ref}}
-  + K_v(\dot\phi_{i,\mathrm{ref}}-\dot\phi_i),\;-0.5,\;0.5\right)
+  + K_v(\dot\phi_{i,\mathrm{ref}}-\dot\phi_i),\;-\tau_{\max},\;\tau_{\max}\right)
 $$
 
 The car's tendon gearing gives $\tau_L=(u_{\mathrm{forward}}-u_{\mathrm{turn}})/2$
 and $\tau_R=(u_{\mathrm{forward}}+u_{\mathrm{turn}})/2$, so the controller returns
 `ControlInput(forward=tau_left + tau_right, turn=tau_right - tau_left)`.
 
-The defaults use lookahead **0.18 m**, turn-rate reference limited to **10 rad/s**,
-wheel-speed references to **12 rad/s**,
-and their rate of change to **15 rad/s²**. The model already limits each wheel's
-motor torque to **0.5 N m** and each control input to `[-1, 1]`.
-These are simulation settings, not measured hardware ratings. Reference limits
-do not clamp the actual motion; MuJoCo still determines acceleration and slip.
+Classic currently uses lookahead **0.1 m**, turn-rate references limited to
+**10 rad/s**, wheel-speed references to **30 rad/s**, and their rate of change to
+**15 rad/s²**. Its controller torque clip is **1 N m**. The simulation then clips
+each control input to `[-1, 1]`, and MuJoCo limits each wheel's total actuator
+torque to **0.5 N m**. These are simulation settings; MuJoCo determines actual
+acceleration and slip.
+
+### MPC control
+
+[`controllers/mpc/mpc_control.py`](src/simple_robot_comparison/controllers/mpc/mpc_control.py)
+implements `MPCController` with do-mpc, CasADi, and the IPOPT nonlinear solver.
+It plans forward speed and turning rate, then uses wheel-speed feedback to
+produce motor efforts.
+
+The default horizon is **15 steps × 0.1 s = 1.5 s**. Every 0.1 simulation seconds,
+the controller predicts motion, minimizes tracking error subject to command
+limits, and takes the first command. It replans from the newly observed pose
+after that interval. Wheel references ramp toward the selected command and
+motor feedback runs every **0.02 s** between solves.
+
+#### Prediction model and future targets
+
+`_build_mpc()` defines five states: body position `(x, y)`, heading `theta`, and
+the current **commanded** forward speed and yaw rate. The two optimized inputs
+are the speed and yaw rate to reach by the next prediction step. Commanded
+motion is reconstructed from `wheel_reference`; measured pose updates the
+prediction, while measured wheel speeds feed the motor controller.
+
+The nominal rolling model accounts for the body origin being $l=0.07$ m ahead
+of the wheel axle:
+
+$$
+\dot x=v\cos\theta-l\omega\sin\theta,\qquad
+\dot y=v\sin\theta+l\omega\cos\theta,\qquad
+\dot\theta=\omega.
+$$
+
+The discrete update uses midpoint integration of a linear speed/yaw-rate ramp.
+`model.set_rhs("pose", ...)` defines the next pose, and
+`model.set_rhs("motion", command)` makes the next commanded motion equal the
+selected input.
+
+`reference_horizon()` projects the car onto the path and samples future
+`(x, y, heading, speed)` targets from the shared speed profile. It advances path
+distance using $ds/dt=v_{\mathrm{ref}}(s)$, so slower bends have closer-spaced
+targets. Closed paths wrap across the finish. Open paths hold the last point
+with zero target speed once future samples reach it.
+
+#### Objective, constraints, and motor feedback
+
+For position errors $e_x,e_y$, heading error $e_\theta$, and commanded-speed
+error $e_v$, the per-state tracking cost is
+
+$$
+L=q_p(e_x^2+e_y^2)+2q_\theta(1-\cos e_\theta)+q_v e_v^2.
+$$
+
+`set_objective(lterm=cost, mterm=cost)` applies it along the horizon and at the
+final state. The periodic heading term handles angle wraparound.
+`set_rterm(command=...)` adds a penalty on changes in speed and turning commands
+to encourage smooth control. Tracking targets are weighted preferences.
+
+Hard command constraints enforce forward speed in `[0, max_speed]`, bounded yaw
+rate, and bounded wheel speeds and accelerations. MPC's nominal wheel-speed
+limit is $0.5/0.03\approx16.67$ rad/s, from the model's torque limit and damping.
+The default acceleration limit permits at most a 1.5 rad/s wheel-reference
+change per 0.1 s interval. The shared lateral-acceleration setting shapes the
+reference; it is not a hard constraint on the optimized trajectory.
+
+In `__call__()`, `self._mpc.make_step(state)` solves the problem and returns the
+first speed/turn command. The controller converts it to wheel speeds, ramps
+the references, and uses the damping compensation and wheel-speed feedback
+described above, with a **0.5 N m** torque clip. Solver failures raise an error
+and stop the run. IPOPT seeks a local solution; global optimality is not assured.
+
+The prediction assumes rolling without slip and ideal wheel-speed tracking.
+It has no friction estimator or grip preview. MuJoCo simulates the actual
+contacts and slip, so replanning can correct observed errors but cannot guarantee
+the predicted motion on slippery ground.
+
+#### MPC tuning
+
+These flags affect `mpc` and the MPC car in `compare`. Defaults are in `MPCConfig`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--mpc-horizon` | `15` | Number of prediction intervals |
+| `--mpc-time-step` | `0.1` | Prediction interval and time between solves, in seconds |
+| `--mpc-max-yaw-rate` | `4.0` | Commanded turning-rate limit in rad/s |
+| `--mpc-wheel-acceleration` | `15.0` | Wheel-reference acceleration limit in rad/s² |
+| `--mpc-position-weight` | `30.0` | Position-error penalty |
+| `--mpc-heading-weight` | `1.0` | Heading-error penalty |
+| `--mpc-speed-weight` | `5.0` | Commanded-speed tracking penalty |
+| `--mpc-input-weight` | `0.1` | Penalty on command changes |
+
+All values must be finite and positive; the horizon must be an integer and the
+time step a positive multiple of 0.02 s. Increasing the horizon extends preview
+and increases computation. Changing the time step changes both solve frequency
+and preview duration. Timing is in simulation seconds; computation and rendering
+can make a run slower than real time.
+
+```sh
+uv run sim --mode compare --friction random --max-speed 0.4 --mpc-horizon 20
+uv run sim --mode mpc --mpc-time-step 0.04 --mpc-horizon 30
+```
+
+Comparison shares the path, terrain, starting state, and speed profile, but the
+controllers' internal limits differ: classic uses 30 rad/s wheel and 10 rad/s
+yaw references, versus MPC's 16.67 rad/s and 4 rad/s defaults. Their torque clips
+also differ as described above. These choices affect results alongside the
+control methods; shared reference speeds do not imply identical actual speeds.
+
+## Development checks
+
+```sh
+uv run python -m unittest discover -s tests -v
+uv run ruff check .
+uv run ruff format --check .
+```

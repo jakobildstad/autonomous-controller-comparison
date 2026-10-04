@@ -46,9 +46,9 @@ class Simulation:
         self.dt = self.substeps * self.model.opt.timestep
         self.reset()
 
-    def reset(self) -> None:
-        """Reset the car and regenerate the grip field only in random mode."""
-        self.grip = FrictionMap(self.rng, self.friction)
+    def reset(self, grip: FrictionMap | None = None) -> None:
+        """Reset with a supplied shared map, or generate a new episode's map."""
+        self.grip = grip if grip is not None else FrictionMap(self.rng, self.friction)
         self.grip.write_texture(self.model)
         self.model.geom("ground").friction[0] = FRICTION_PRESETS.get(self.friction, 1.0)
         mujoco.mj_resetData(self.model, self.data)

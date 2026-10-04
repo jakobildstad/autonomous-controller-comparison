@@ -3,17 +3,23 @@
 import numpy as np
 
 from simple_robot_comparison.control_input import ControlInput
+from simple_robot_comparison.controllers.speed_reference import (
+    DEFAULT_MAX_BRAKING_ACCELERATION,
+    DEFAULT_MAX_LATERAL_ACCELERATION,
+    DEFAULT_MAX_SPEED,
+    MAX_WHEEL_SPEED,
+    MAX_YAW_RATE,
+    WHEEL_RADIUS,
+    WHEEL_SEPARATION,
+    speed_reference,
+)
 from simple_robot_comparison.observation import Observation
 
 # Nominal dimensions and motor properties from models/car.xml (SI units).
-WHEEL_RADIUS = 0.03
-WHEEL_SEPARATION = 0.12
 WHEEL_DAMPING = 0.03
-MAX_WHEEL_TORQUE = 0.5
+MAX_WHEEL_TORQUE = 1
 
 # Conservative reference limits for this simulation, not hardware ratings.
-MAX_YAW_RATE = 10.0  # rad/s
-MAX_WHEEL_SPEED = 30.0  # rad/s
 MAX_WHEEL_ACCELERATION = 15.0  # rad/s^2
 
 
@@ -24,11 +30,16 @@ class ClassicController:
     ``controller(observation, reference, dt) -> ControlInput``.
     """
 
-    def __init__(self) -> None:
-        self.lookahead = 0.18  # metres along the path
-        self.max_speed = WHEEL_RADIUS * MAX_WHEEL_SPEED  # 0.36 m/s straight ahead
-        self.max_lateral_acceleration = 0.3  # m/s^2; assumed grip, not measured
-        self.max_braking_acceleration = 0.25  # m/s^2; planned deceleration
+    def __init__(
+        self,
+        max_speed: float = DEFAULT_MAX_SPEED,
+        max_lateral_acceleration: float = DEFAULT_MAX_LATERAL_ACCELERATION,
+        max_braking_acceleration: float = DEFAULT_MAX_BRAKING_ACCELERATION,
+    ) -> None:
+        self.lookahead = 0.1  # metres along the path
+        self.max_speed = max_speed
+        self.max_lateral_acceleration = max_lateral_acceleration
+        self.max_braking_acceleration = max_braking_acceleration
         self.speed_reference = 0.0  # current v_ref in m/s
         self.heading_kp = 4.0  # (rad/s) / rad
         self.heading_kd = 0.1
@@ -103,103 +114,6 @@ class ClassicController:
         # car.xml mixes commands as tau_L=(forward-turn)/2 and
         # tau_R=(forward+turn)/2. Invert that mapping for the two wheel torques.
         return ControlInput(forward=float(left + right), turn=float(right - left))
-
-
-def speed_reference(
-    position: np.ndarray,
-    reference: np.ndarray,
-    max_speed: float,
-    max_lateral_acceleration: float,
-    max_braking_acceleration: float,
-) -> float:
-    """Return the largest local speed allowed by the planned path constraints.
-
-    Estimate curvature from three neighbouring points, cap speed by lateral
-    acceleration and wheel/yaw limits, then propagate braking limits backwards.
-    Closed loops include braking across the start line. Open paths do not impose
-    a terminal stop. Consecutive duplicate points are ignored.
-
-    Limits are nominal assumptions, not knowledge of the terrain: this plans a
-    reference, not a guaranteed minimum lap time or a tire-slip safety bound.
-    """
-    limits = np.array([max_speed, max_lateral_acceleration, max_braking_acceleration])
-    if not np.all(np.isfinite(limits)) or np.any(limits <= 0):
-        raise ValueError("Speed and acceleration limits must be finite and positive")
-    points = np.asarray(reference, dtype=float)
-    if (
-        points.ndim != 2
-        or points.shape[1] != 2
-        or len(points) < 2
-        or not np.all(np.isfinite(points))
-    ):
-        raise ValueError("Reference must contain at least two finite (x, y) points")
-    lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    points = points[np.r_[True, lengths > 1e-9]]
-    if len(points) < 2:
-        raise ValueError("Reference must have positive length")
-    closed = np.array_equal(points[0], points[-1])
-    vertices = points[:-1] if closed else points
-    if closed and len(vertices) < 3:
-        raise ValueError("A closed reference needs at least three distinct vertices")
-
-    # Circumcircle curvature: |kappa| = 2*|cross(a,b)| / (|a|*|b|*|a+b|).
-    # Unlike differences by waypoint index, this handles unequal point spacing.
-    incoming = vertices - np.roll(vertices, 1, axis=0)
-    outgoing = np.roll(vertices, -1, axis=0) - vertices
-    denominator = (
-        np.linalg.norm(incoming, axis=1)
-        * np.linalg.norm(outgoing, axis=1)
-        * np.linalg.norm(incoming + outgoing, axis=1)
-    )
-    cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
-    curvature = np.divide(
-        2 * np.abs(cross),
-        denominator,
-        out=np.zeros(len(vertices)),
-        where=denominator > 1e-12,
-    )
-    if not closed:
-        curvature[[0, -1]] = curvature[[1, -2]] if len(vertices) > 2 else 0.0
-    else:
-        curvature = np.r_[curvature, curvature[0]]
-
-    # On the path, yaw rate is v*kappa and the outer wheel travels faster.
-    # Reserve that wheel-speed headroom before the downstream motor limiter.
-    safe_curvature = np.maximum(curvature, 1e-6)
-    wheel_limit = (
-        WHEEL_RADIUS * MAX_WHEEL_SPEED / (1 + WHEEL_SEPARATION * curvature / 2)
-    )
-    speed_squared = np.minimum(max_speed, wheel_limit) ** 2
-    speed_squared = np.minimum(speed_squared, max_lateral_acceleration / safe_curvature)
-    speed_squared = np.minimum(speed_squared, (MAX_YAW_RATE / safe_curvature) ** 2)
-
-    segments = np.diff(points, axis=0)
-    lengths = np.linalg.norm(segments, axis=1)
-    # v_i^2 <= v_(i+1)^2 + 2*a_brake*ds. A second lap carries a limit near
-    # the start backwards through the finish; further laps cannot tighten it.
-    for _ in range(2 if closed else 1):
-        for i in range(len(lengths) - 1, -1, -1):
-            speed_squared[i] = min(
-                speed_squared[i],
-                speed_squared[i + 1] + 2 * max_braking_acceleration * lengths[i],
-            )
-        if closed:
-            speed_squared[-1] = speed_squared[0]
-
-    # Sample at the car's projection, not the LOS target: braking is already
-    # built into the profile. Interpolate v^2, which is linear under constant a.
-    fractions = np.clip(
-        np.sum((position - points[:-1]) * segments, axis=1) / lengths**2, 0.0, 1.0
-    )
-    projections = points[:-1] + fractions[:, None] * segments
-    closest = np.sum((projections - position) ** 2, axis=1).argmin()
-    fraction = fractions[closest]
-    return float(
-        np.sqrt(
-            (1 - fraction) * speed_squared[closest]
-            + fraction * speed_squared[closest + 1]
-        )
-    )
 
 
 def wrap_angle(angle: float) -> float:
