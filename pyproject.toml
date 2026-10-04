@@ -1,7 +1,7 @@
 [project]
 name = "simple-robot-comparison"
 version = "0.1.0"
-description = "Manual MuJoCo driving with a reference path and varying grip"
+description = "Classic and model predictive path-tracking control for a MuJoCo differential-drive rover"
 readme = "README.md"
 authors = [
     { name = "Jakob Ildstad", email = "jakobildstad@gmail.com" }

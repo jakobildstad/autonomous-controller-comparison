@@ -1,4 +1,4 @@
-# Simple Robot Comparison
+# Autonomous Controller Comparison
 
 ![Classic (blue) and MPC (orange) on the shared MuJoCo track](docs/images/comparison.png)
 
