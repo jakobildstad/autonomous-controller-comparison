@@ -80,7 +80,7 @@ class SharedSpeedReferenceTests(unittest.TestCase):
 
     def test_mpc_future_targets_follow_variable_profile(self):
         reference = random_reference(7)
-        config = MPCConfig(horizon=50)
+        config = MPCConfig(horizon=50, time_step=0.1)
         profile = build_speed_profile(
             reference,
             config.speed,
@@ -101,7 +101,7 @@ class SharedSpeedReferenceTests(unittest.TestCase):
         reference = random_reference(7)
         simulation = Simulation()
         classic = ClassicController()
-        mpc = MPCController(MPCConfig(horizon=30))
+        mpc = MPCController(MPCConfig(horizon=30, time_step=0.1))
         observation = simulation.observe()
         classic(observation, reference, simulation.dt)
         mpc(observation, reference, simulation.dt)

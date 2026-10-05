@@ -1,4 +1,4 @@
-"""do-mpc path tracking with a nominal rolling model and wheel-speed feedback."""
+"""do-mpc path tracking with measured motion and a nominal response model."""
 
 from __future__ import annotations
 
@@ -31,18 +31,20 @@ WHEEL_SPEED_KP = 0.02
 
 @dataclass(frozen=True)
 class MPCConfig:
-    """Prediction timing, nominal motion limits, and tracking cost weights."""
+    """Prediction timing, response constants, motion limits, and cost weights."""
 
-    horizon: int = 15
-    time_step: float = 0.1
+    horizon: int = 25
+    time_step: float = 0.06
     speed: float = DEFAULT_MAX_SPEED
     max_lateral_acceleration: float = DEFAULT_MAX_LATERAL_ACCELERATION
     max_braking_acceleration: float = DEFAULT_MAX_BRAKING_ACCELERATION
     max_yaw_rate: float = 4.0
     wheel_acceleration: float = 15.0
+    speed_time_constant: float = 0.05
+    yaw_time_constant: float = 0.05
     position_weight: float = 30.0
     heading_weight: float = 1.0
-    speed_weight: float = 5.0
+    speed_weight: float = 10.0
     input_weight: float = 0.1
 
     def __post_init__(self) -> None:
@@ -61,10 +63,11 @@ class MPCConfig:
 class MPCController:
     """Optimize a speed/turning ramp, then track it with wheel motor efforts.
 
-    The five prediction states are body x/y/yaw and *commanded* speed/yaw rate.
-    The model assumes rolling without slip and ideal wheel-speed tracking;
-    MuJoCo still determines the actual motion. Feedback uses the observation's
-    ideal pose and encoders, never the ground's hidden friction map.
+    The seven states are body x/y/yaw, actual forward speed/yaw rate, and
+    commanded speed/yaw rate. Actual motion follows the commands through a
+    first-order lag; the geometry still assumes no lateral slip at the axle.
+    Feedback uses ideal simulated pose, velocity and encoders, never hidden
+    terrain friction. MuJoCo determines the actual motion and slip.
 
     Solve every ``time_step`` seconds; ramp wheel references and apply feedback
     every simulation step. Create a fresh instance when the episode resets.
@@ -90,12 +93,24 @@ class MPCController:
         model = do_mpc.model.Model("discrete")
         pose = model.set_variable("_x", "pose", (3, 1))
         motion = model.set_variable("_x", "motion", (2, 1))
+        commanded_motion = model.set_variable("_x", "commanded_motion", (2, 1))
         command = model.set_variable("_u", "command", (2, 1))
         target = model.set_variable("_tvp", "target", (4, 1))
 
-        # Midpoint integration of a linear speed/yaw-rate ramp over one MPC step.
-        speed = (motion[0] + command[0]) / 2
-        yaw_rate = (motion[1] + command[1]) / 2
+        # Exact first-order response to the wheel-reference ramp over this step.
+        tau = np.array([config.speed_time_constant, config.yaw_time_constant])
+        response = -np.expm1(-config.time_step / tau)
+        next_motion = (
+            motion
+            + ca.DM(response) * (commanded_motion - motion)
+            + ca.DM(1 - tau * response / config.time_step)
+            * (command - commanded_motion)
+        )
+        # Integrating tau * motion_dot = command(t) - motion gives mean motion.
+        mean_motion = (commanded_motion + command) / 2 - ca.DM(
+            tau / config.time_step
+        ) * (next_motion - motion)
+        speed, yaw_rate = mean_motion[0], mean_motion[1]
         heading = pose[2] + config.time_step * yaw_rate / 2
         velocity = ca.vertcat(
             speed * ca.cos(heading) - AXLE_OFFSET * yaw_rate * ca.sin(heading),
@@ -103,7 +118,8 @@ class MPCController:
             yaw_rate,
         )
         model.set_rhs("pose", pose + config.time_step * velocity)
-        model.set_rhs("motion", command)
+        model.set_rhs("motion", next_motion)
+        model.set_rhs("commanded_motion", command)
         model.setup()
 
         mpc = do_mpc.controller.MPC(model)
@@ -131,7 +147,7 @@ class MPCController:
                 command[0] + sign * WHEEL_SEPARATION * command[1] / 2
             ) / WHEEL_RADIUS
             previous = (
-                motion[0] + sign * WHEEL_SEPARATION * motion[1] / 2
+                commanded_motion[0] + sign * WHEEL_SEPARATION * commanded_motion[1] / 2
             ) / WHEEL_RADIUS
             mpc.set_nl_cons(f"{name}_speed", wheel**2, ub=MAX_WHEEL_SPEED**2)
             mpc.set_nl_cons(
@@ -164,8 +180,9 @@ class MPCController:
             [observation.left_wheel_speed, observation.right_wheel_speed]
         )
         pose = np.array([observation.x, observation.y, observation.yaw])
-        if not np.all(np.isfinite(pose)) or not np.all(np.isfinite(measured_wheels)):
-            raise ValueError("MPC requires a finite pose and wheel speeds")
+        velocity = np.array([observation.vx, observation.vy, observation.yaw_rate])
+        if not np.all(np.isfinite(np.r_[pose, velocity, measured_wheels])):
+            raise ValueError("MPC requires a finite pose, velocity and wheel speeds")
         if self._yaw is None:
             self._yaw = observation.yaw
         else:
@@ -179,14 +196,20 @@ class MPCController:
             for step, target in enumerate(targets):
                 self._tvp["_tvp", step, "target"] = target
             left, right = self.wheel_reference
-            motion = [
+            commanded_motion = [
                 WHEEL_RADIUS * (left + right) / 2,
                 WHEEL_RADIUS * (right - left) / WHEEL_SEPARATION,
             ]
-            state = np.r_[pose, motion].reshape(-1, 1)
+            # World velocity projected onto the car's forward axis. The axle
+            # offset affects lateral velocity only in this planar model.
+            motion = [
+                observation.vx * np.cos(pose[2]) + observation.vy * np.sin(pose[2]),
+                observation.yaw_rate,
+            ]
+            state = np.r_[pose, motion, commanded_motion].reshape(-1, 1)
             if not self._initialized:
                 self._mpc.x0 = state
-                self._mpc.u0 = np.array(motion).reshape(-1, 1)
+                self._mpc.u0 = np.array(commanded_motion).reshape(-1, 1)
                 self._mpc.set_initial_guess()
                 self._initialized = True
             try:
@@ -212,7 +235,7 @@ class MPCController:
             )
             self._steps_remaining = round(steps)
 
-        # Match the ramp used by the prediction model, including between solves.
+        # Match the command ramp driving the response model between solves.
         self.wheel_reference += (
             self._target_wheels - self.wheel_reference
         ) / self._steps_remaining

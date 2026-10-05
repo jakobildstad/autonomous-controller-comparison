@@ -245,22 +245,44 @@ implements `MPCController` with do-mpc, CasADi, and the IPOPT nonlinear solver.
 It plans forward speed and turning rate, then uses wheel-speed feedback to
 produce motor efforts.
 
-The default horizon is **15 steps × 0.1 s = 1.5 s**. Every 0.1 simulation seconds,
+The default horizon is **25 steps × 0.06 s = 1.5 s**. Every 0.06 simulation seconds,
 the controller predicts motion, minimizes tracking error subject to command
-limits, and takes the first command. It replans from the newly observed pose
-after that interval. Wheel references ramp toward the selected command and
-motor feedback runs every **0.02 s** between solves.
+limits, and takes the first command. It replans from the newly observed pose,
+forward speed, and yaw rate after that interval. Wheel references ramp toward
+the selected command and motor feedback runs every **0.02 s** between solves.
 
 #### Prediction model and future targets
 
-`_build_mpc()` defines five states: body position `(x, y)`, heading `theta`, and
-the current **commanded** forward speed and yaw rate. The two optimized inputs
-are the speed and yaw rate to reach by the next prediction step. Commanded
-motion is reconstructed from `wheel_reference`; measured pose updates the
-prediction, while measured wheel speeds feed the motor controller.
+`_build_mpc()` defines seven states: body position `(x, y)`, heading `theta`,
+**actual** forward speed and yaw rate, and **commanded** forward speed and yaw
+rate. The two optimized inputs are the commanded speed and yaw rate to reach
+by the next prediction step.
 
-The nominal rolling model accounts for the body origin being $l=0.07$ m ahead
-of the wheel axle:
+Each solve initializes actual motion from the ideal simulated measurements:
+
+$$
+v=v_x\cos\theta+v_y\sin\theta,\qquad
+\omega=\texttt{observation.yaw\_rate}.
+$$
+
+This projects world velocity onto the car's forward axis, retaining its sign.
+Commanded motion is reconstructed separately from `wheel_reference`, so
+wheel-command acceleration limits remain independent of slipping or drifting.
+Measured wheel speeds still feed the motor controller.
+
+A nominal first-order response model connects commands to actual motion:
+
+$$
+\dot v=\frac{v_{\mathrm{cmd}}-v}{\tau_v},\qquad
+\dot\omega=\frac{\omega_{\mathrm{cmd}}-\omega}{\tau_\omega}.
+$$
+
+Both response time constants default to **0.05 s**. A larger value tells MPC
+that actual motion responds more slowly. These are tunable approximations,
+not measured terrain friction or an online estimate of grip.
+
+The pose model uses actual motion and accounts for the body origin being
+$l=0.07$ m ahead of the wheel axle, while still assuming no lateral slip there:
 
 $$
 \dot x=v\cos\theta-l\omega\sin\theta,\qquad
@@ -268,10 +290,11 @@ $$
 \dot\theta=\omega.
 $$
 
-The discrete update uses midpoint integration of a linear speed/yaw-rate ramp.
-`model.set_rhs("pose", ...)` defines the next pose, and
-`model.set_rhs("motion", command)` makes the next commanded motion equal the
-selected input.
+The discrete update integrates the first-order response exactly for a linear
+command ramp. It uses the resulting mean speed and yaw rate with a midpoint
+heading to approximate the pose update. `model.set_rhs("motion", ...)` predicts
+actual motion; `model.set_rhs("commanded_motion", command)` stores the command
+endpoint for the next interval.
 
 `reference_horizon()` projects the car onto the path and samples future
 `(x, y, heading, speed)` targets from the shared speed profile. It advances path
@@ -281,7 +304,7 @@ with zero target speed once future samples reach it.
 
 #### Objective, constraints, and motor feedback
 
-For position errors $e_x,e_y$, heading error $e_\theta$, and commanded-speed
+For position errors $e_x,e_y$, heading error $e_\theta$, and actual-forward-speed
 error $e_v$, the per-state tracking cost is
 
 $$
@@ -294,10 +317,11 @@ final state. The periodic heading term handles angle wraparound.
 to encourage smooth control. Tracking targets are weighted preferences.
 
 Hard command constraints enforce forward speed in `[0, max_speed]`, bounded yaw
-rate, and bounded wheel speeds and accelerations. MPC's nominal wheel-speed
+rate, and bounded wheel-reference speeds and accelerations. These are command
+limits, not constraints on measured body motion. MPC's nominal wheel-speed
 limit is $0.5/0.03\approx16.67$ rad/s, from the model's torque limit and damping.
-The default acceleration limit permits at most a 1.5 rad/s wheel-reference
-change per 0.1 s interval. The shared lateral-acceleration setting shapes the
+The default acceleration limit permits at most a 0.9 rad/s wheel-reference
+change per 0.06 s interval. The shared lateral-acceleration setting shapes the
 reference; it is not a hard constraint on the optimized trajectory.
 
 In `__call__()`, `self._mpc.make_step(state)` solves the problem and returns the
@@ -306,10 +330,13 @@ the references, and uses the damping compensation and wheel-speed feedback
 described above, with a **0.5 N m** torque clip. Solver failures raise an error
 and stop the run. IPOPT seeks a local solution; global optimality is not assured.
 
-The prediction assumes rolling without slip and ideal wheel-speed tracking.
-It has no friction estimator or grip preview. MuJoCo simulates the actual
-contacts and slip, so replanning can correct observed errors but cannot guarantee
-the predicted motion on slippery ground.
+This remains ordinary MPC with measured-state feedback. The response model
+allows actual forward speed and yaw rate to differ from their commands, but
+assumes they eventually converge. It does not model lateral sliding at the
+axle, persistent wheel slip, tire forces, or terrain-dependent response. There
+is no friction estimator or grip preview. MuJoCo simulates the actual contacts
+and slip; measured motion improves the starting state of each prediction but
+does not guarantee better tracking on every surface.
 
 #### MPC tuning
 
@@ -317,13 +344,15 @@ These flags affect `mpc` and the MPC car in `compare`. Defaults are in `MPCConfi
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--mpc-horizon` | `15` | Number of prediction intervals |
-| `--mpc-time-step` | `0.1` | Prediction interval and time between solves, in seconds |
+| `--mpc-horizon` | `25` | Number of prediction intervals |
+| `--mpc-time-step` | `0.06` | Prediction interval and time between solves, in seconds |
 | `--mpc-max-yaw-rate` | `4.0` | Commanded turning-rate limit in rad/s |
 | `--mpc-wheel-acceleration` | `15.0` | Wheel-reference acceleration limit in rad/s² |
+| `--mpc-speed-time-constant` | `0.05` | Nominal forward-speed response time constant in seconds |
+| `--mpc-yaw-time-constant` | `0.05` | Nominal yaw-rate response time constant in seconds |
 | `--mpc-position-weight` | `30.0` | Position-error penalty |
 | `--mpc-heading-weight` | `1.0` | Heading-error penalty |
-| `--mpc-speed-weight` | `5.0` | Commanded-speed tracking penalty |
+| `--mpc-speed-weight` | `10.0` | Actual forward-speed tracking penalty |
 | `--mpc-input-weight` | `0.1` | Penalty on command changes |
 
 All values must be finite and positive; the horizon must be an integer and the
@@ -332,9 +361,14 @@ and increases computation. Changing the time step changes both solve frequency
 and preview duration. Timing is in simulation seconds; computation and rendering
 can make a run slower than real time.
 
+The speed weight encourages following the planned corner speeds. Lowering it
+can also let MPC accelerate to catch up with moving position targets, so check
+both path error and lap time when tuning it.
+
 ```sh
 uv run sim --mode compare --friction random --max-speed 0.4 --mpc-horizon 20
 uv run sim --mode mpc --mpc-time-step 0.04 --mpc-horizon 30
+uv run sim --mode mpc --friction low --mpc-yaw-time-constant 0.1
 ```
 
 Comparison shares the path, terrain, starting state, and speed profile, but the

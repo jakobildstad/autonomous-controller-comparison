@@ -71,9 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
             float,
             "maximum wheel-reference acceleration in rad/s^2",
         ),
+        (
+            "speed_time_constant",
+            float,
+            "nominal forward-speed response time in seconds",
+        ),
+        ("yaw_time_constant", float, "nominal yaw-rate response time in seconds"),
         ("position_weight", float, "position tracking cost weight"),
         ("heading_weight", float, "heading tracking cost weight"),
-        ("speed_weight", float, "variable speed tracking cost weight"),
+        ("speed_weight", float, "actual forward-speed tracking cost weight"),
         ("input_weight", float, "penalty on changes in speed and turning commands"),
     ):
         default = getattr(defaults, name)
