@@ -7,6 +7,7 @@ from math import isfinite
 
 from simple_robot_comparison.controllers import CONTROLLERS
 from simple_robot_comparison.controllers.mpc.mpc_control import MPCConfig, MPCController
+from simple_robot_comparison.metrics import TrackingScore
 from simple_robot_comparison.reference import random_reference
 from simple_robot_comparison.simulation import Simulation
 from simple_robot_comparison.terrain import FRICTION_MODES
@@ -141,6 +142,7 @@ def main() -> None:
         for name, factory in factories.items()
     }
     reference = random_reference()
+    scores = {name: TrackingScore() for name in simulations}
     viewer = Viewer(simulation.model, mode=args.mode, friction=args.friction)
     try:
         viewer.reset_trails(simulations)
@@ -154,6 +156,7 @@ def main() -> None:
                 viewer.refresh_ground_texture(simulation.model)
                 viewer.reset_trails(simulations)
                 reference = random_reference()
+                scores = {name: TrackingScore() for name in simulations}
                 controllers = {
                     name: factory() if factory is not None else None
                     for name, factory in factories.items()
@@ -167,12 +170,15 @@ def main() -> None:
                 else:
                     control_input = controller(car.observe(), reference, car.dt)
                 car.step(control_input)
+                observation = car.observe()
+                scores[name].update((observation.x, observation.y), reference)
             viewer.record_trails(simulations)
             viewer.draw(
                 simulation.model,
                 simulation.data,
                 reference,
                 cars=simulations if args.mode == "compare" else None,
+                scores={name: score.rms_error for name, score in scores.items()},
             )
             time.sleep(max(0.0, simulation.dt - (time.perf_counter() - started)))
     finally:

@@ -154,6 +154,7 @@ class MPCConfigTests(unittest.TestCase):
             patch("simple_robot_comparison.main.time.sleep"),
         ):
             simulation.return_value.dt = 0.02
+            simulation.return_value.observe.return_value = Simulation().observe()
             viewer.return_value.poll.side_effect = [True, False]
             viewer.return_value.reset_requested = True
             factory.return_value.return_value = ControlInput()

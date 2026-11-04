@@ -42,14 +42,22 @@ and controller limits can differ.
 
 In manual mode, hold **W/S** (or up/down) to drive and **A/D** (or left/right)
 to turn. Releasing the keys switches off motor effort; it does not brake.
-**R** resets all cars and controllers, clears their trails, and generates a new
-loop. Uniform friction stays unchanged; random mode generates a new shared map.
+**R** resets all cars, controllers, tracking scores and trails, and generates a
+new loop. Uniform friction stays unchanged; random mode generates a new shared
+map.
 **Esc** closes the window.
 
 Thin, translucent trails match each car's color and retain its latest 3,000
 position samples. They trace the body-origin `(x, y)` used for path tracking,
 projected onto the reference line's ground plane. Perfect tracking therefore
 overlaps the reference; there is no offset to the rear of the car.
+
+The upper-right **tracking score** shows each car's RMS distance from the
+reference in centimetres; **lower is better**. It uses the closest point on
+the reference line segments and the same body origin as the trails. Scores
+accumulate once per simulation step since the last reset, independently of
+rendering speed or the trail length. This measures tracking accuracy, not lap
+time or progress: a car stopped on the path can also score zero.
 
 Random grip combines Gaussian-smoothed noise at two scales, creating broad
 regions with smaller irregular variations. The map stays fixed until reset.

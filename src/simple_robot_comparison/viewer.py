@@ -124,6 +124,7 @@ class Viewer:
         reference: np.ndarray,
         *,
         cars: Mapping[str, Simulation] | None = None,
+        scores: Mapping[str, float] | None = None,
     ) -> None:
         """Draw a shared track and either one car or labeled comparison cars."""
         mujoco.mjv_updateScene(
@@ -168,6 +169,19 @@ class Viewer:
             "",
             self.context,
         )
+        if scores is not None:
+            mujoco.mjr_overlay(
+                mujoco.mjtFont.mjFONT_NORMAL,
+                mujoco.mjtGridPos.mjGRID_TOPRIGHT,
+                viewport,
+                "Tracking score (RMS cm)\nLower is better\n\n"
+                + "\n".join(
+                    f"{name.upper()}: {100 * error:.2f}"
+                    for name, error in scores.items()
+                ),
+                "",
+                self.context,
+            )
         glfw.swap_buffers(self.window)
 
     def _add_trails(self) -> None:
